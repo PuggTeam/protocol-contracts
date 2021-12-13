@@ -44,7 +44,9 @@ interface IPuggPool {
 
     function stakeToken(uint tokenID, string memory code, uint amount) external;
 
-    function withdraw_pledgeToken(uint amount) external;
+    function withdraw_pledgeToken(uint timestamp, string memory cardtype) external;
 
-    function withdraw_releaseToken(uint amount) external;
+    function withdraw_releaseToken(uint timestamp, string memory cardtype) external;
+
+    function restakeToken(uint timestamp, string memory cardtype) external;
 }

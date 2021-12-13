@@ -5,7 +5,7 @@ import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
 import "./interface/IPuggPool.sol";
-import "./interface/IPuggSale.sol";
+import "./interface/IPuggNFTSale.sol";
 import "./PuggNFT.sol";
 
 contract PuggPool is IPuggPool, OwnableUpgradeable, PausableUpgradeable {
@@ -19,16 +19,14 @@ contract PuggPool is IPuggPool, OwnableUpgradeable, PausableUpgradeable {
     uint public                                             totalPledge;
     mapping(uint => uint)public                             totalPledgeMap;                 //time => totalpledge;
     mapping(uint => uint)public                             totalReleaseMap;                //time => totalRelease
-    mapping(address => mapping(uint => mapping(uint => StakeInfo))) public userPledgesMap;  //user Pledges  address => timestamp => cardID => StakeInfo
+    mapping(address => mapping(uint => mapping(string => StakeInfo))) public userPledgesMap;  //user Pledges  address => timestamp => cardtype => StakeInfo
     mapping(address => uint[]) public                       userPledgeDaysMap;              //user Pledges days[]
-    mapping(address => uint[]) public                       userPledgeCardIdsMap;           //user Pledges cardId[]
+    mapping(address => string[]) public                     userPledgeCardsMap;           //user Pledges cardtyps[]
     mapping(address => uint) public                         userUpdateTimeMap;
-    mapping(address => mapping(uint => bool)) public        hasCardIdsMap;
+    mapping(address => mapping(string => bool)) public      hasCardTypesMap;
     mapping(address => mapping(string => bool)) public      hasPledgedMap;
     mapping(string => NodeInfo) public                      userNodeMap;
-    //mapping(address => bool) private                        defaultApprovals;
     string[] public                                         userNodeCodes;
-
     uint private                                            lastUpdateTime;
     uint public                                             q;
     uint public                                             weight_a;
@@ -43,11 +41,6 @@ contract PuggPool is IPuggPool, OwnableUpgradeable, PausableUpgradeable {
         require(startTime > 0 && block.timestamp >= startTime,"not start");
         _;
     }
-
-    // modifier onlyApprovedForAll() {
-    //     require(isApprovedForAll(_msgSender()), "caller is not approved");
-    //     _;
-    // }
 
     function __initialize(address _ntf, address _base_erc20, address sale, uint _totalSupply, uint _q, uint _node_creating_fee) external initializer {
         require(_q <= 10000, "q must <= 10000");
@@ -133,19 +126,20 @@ contract PuggPool is IPuggPool, OwnableUpgradeable, PausableUpgradeable {
     }
 
     function _addPledgeInfo(uint tokenID, uint day, uint amount) internal {
-        mapping(uint => mapping(uint => StakeInfo)) storage record = userPledgesMap[_msgSender()];
-        (uint cardId, uint rate) = PuggNFT(pugg_nft).getCardRate(tokenID);
-
-        if (!record[day][cardId].created) {
+        mapping(uint => mapping(string => StakeInfo)) storage record = userPledgesMap[_msgSender()];
+        string memory cardtype = PuggNFT(pugg_nft).tokenIdTypeMap(tokenID);
+        uint rate = IPuggNFTSale(nft_sale).getCard(cardtype).stake_rate;
+        if (!record[day][cardtype].created) {
             userPledgeDaysMap[_msgSender()].push(day);
-            record[day][cardId].created = true;
+            record[day][cardtype].created = true;
         }
 
-        if (!hasCardIdsMap[_msgSender()][cardId]) {
-            userPledgeCardIdsMap[_msgSender()].push(cardId);
+        if (!hasCardTypesMap[_msgSender()][cardtype]) {
+            userPledgeCardsMap[_msgSender()].push(cardtype);
+            hasCardTypesMap[_msgSender()][cardtype] = true;
         }
         
-        record[day][cardId].amount = record[day][cardId].amount.add(amount);
+        record[day][cardtype].amount = record[day][cardtype].amount.add(amount);
 
         //update total pledge
         totalPledge = totalPledge.add(amount.mul(rate).div(10000));
@@ -235,72 +229,73 @@ contract PuggPool is IPuggPool, OwnableUpgradeable, PausableUpgradeable {
         return block.timestamp < _day.add(30 days);
     }
 
-    function _updateStakeInfo(uint timestamp, uint cardId) internal {
-        StakeInfo storage Info = userPledgesMap[_msgSender()][timestamp][cardId];
+    function _updateStakeInfo(uint timestamp, string memory cardtype) internal {
+        StakeInfo storage Info = userPledgesMap[_msgSender()][timestamp][cardtype];
         uint nextday = getNextday();
         uint lastupdate = Info.lastupdate;
-        uint rate = IPuggSale(nft_sale).getCard(cardId);
+        uint rate = IPuggNFTSale(nft_sale).getCard(cardtype).stake_rate;
         uint amount = Info.amount.mul(rate).div(10000);
-        if (lastupdate < next_day.sub(DURATION)) {
-            uint _time = next_day.sub(DURATION);
+        if (lastupdate < nextday.sub(DURATION)) {
+            uint _time = nextday.sub(DURATION);
             while (_time > lastupdate && _time >= timestamp) {
                 Info.balance = Info.balance.add(totalReleaseMap[_time].mul(amount).div(totalPledgeMap[_time]));
                 _time = _time.sub(DURATION);
             }
-            Info.lastupdate = next_day.sub(DURATION);
+            Info.lastupdate = nextday.sub(DURATION);
         }
     }
 
-    function withdraw_pledgeToken(uint timestamp, uint cardId) public override checkStart {
-        require(userPledgesMap[_msgSender()][timestamp][cardId].created, "not found StakeInfo");
-        _updateStakeInfo(timestamp, cardId);  //calculate balance
-        require(userPledgesMap[_msgSender()][timestamp][cardId].amount > 0, "pledge amount is empty");
-        mapping(uint => mapping(uint => StakeInfo)) storage record = userPledgesMap[_msgSender()];
-        uint rate = IPuggSale(nft_sale).getCard(cardId);
+    function withdraw_pledgeToken(uint timestamp, string memory cardtype) public override checkStart {
+        require(userPledgesMap[_msgSender()][timestamp][cardtype].created, "not found StakeInfo");
+        _updateStakeInfo(timestamp, cardtype);  //calculate balance
+        require(userPledgesMap[_msgSender()][timestamp][cardtype].amount > 0, "pledge amount is empty");
+        mapping(uint => mapping(string => StakeInfo)) storage record = userPledgesMap[_msgSender()];
+        uint rate = IPuggNFTSale(nft_sale).getCard(cardtype).stake_rate;
         uint real_amount = 0;
         if (_isneedFine(timestamp)) {
-            real_amount = record.amount.sub(record.amount.mul(withdrawFineRate).div(10000));
+            real_amount = record[timestamp][cardtype].amount.sub(record[timestamp][cardtype].amount.mul(withdrawFineRate).div(10000));
         }
         else {
-            real_amount = record.amount;
+            real_amount = record[timestamp][cardtype].amount;
         }
 
         // update totalPledge
-        totalPledge = totalPledge.sub(record.amount.mul(rate).div(10000));
+        totalPledge = totalPledge.sub(record[timestamp][cardtype].amount.mul(rate).div(10000));
+        record[timestamp][cardtype].amount = 0;
+        uint nextday = getNextday();
         totalPledgeMap[nextday] = totalPledge;
-        record.amount = 0;
         IERC20(baseToken).transfer(_msgSender(), real_amount);
     }
 
-    function withdraw_releaseToken(uint timestamp, uint cardId) public override checkStart {
-        require(userPledgesMap[_msgSender()][timestamp][cardId].created, "not found StakeInfo");
-        _updateStakeInfo(timestamp, cardId);  //calculate balance
-        require(userPledgesMap[_msgSender()][timestamp][cardId].balance > 0, "release amount is empty");
-        mapping(uint => mapping(uint => StakeInfo)) storage record = userPledgesMap[_msgSender()];
-        uint amount = record[timestamp][cardId].balance;
-        record[timestamp][cardId].balance = 0;
+    function withdraw_releaseToken(uint timestamp, string memory cardtype) public override checkStart {
+        require(userPledgesMap[_msgSender()][timestamp][cardtype].created, "not found StakeInfo");
+        _updateStakeInfo(timestamp, cardtype);  //calculate balance
+        require(userPledgesMap[_msgSender()][timestamp][cardtype].balance > 0, "release amount is empty");
+        mapping(uint => mapping(string => StakeInfo)) storage record = userPledgesMap[_msgSender()];
+        uint amount = record[timestamp][cardtype].balance;
+        record[timestamp][cardtype].balance = 0;
         IERC20(baseToken).transfer(_msgSender(), amount);
     }
 
-    function restakeToken(uint timestamp, uint cardId) public override checkStart {
-        require(userPledgesMap[_msgSender()][timestamp][cardId].created, "not found StakeInfo");
-        _updateStakeInfo();
-        require(userPledgesMap[_msgSender()][timestamp][cardId].balance > 0, "release amount is empty");
-        uint rate = IPuggSale(nft_sale).getCard(cardId);
-        mapping(uint => mapping(uint => StakeInfo)) storage record = userPledgesMap[_msgSender()];
+    function restakeToken(uint timestamp, string memory cardtype) public override checkStart {
+        require(userPledgesMap[_msgSender()][timestamp][cardtype].created, "not found StakeInfo");
+        _updateStakeInfo(timestamp, cardtype);
+        require(userPledgesMap[_msgSender()][timestamp][cardtype].balance > 0, "release amount is empty");
+        uint rate = IPuggNFTSale(nft_sale).getCard(cardtype).stake_rate;
+        mapping(uint => mapping(string => StakeInfo)) storage record = userPledgesMap[_msgSender()];
 
-        uint re_amount = record[timestamp][cardId].balance;
-        record[timestamp][cardId].balance = 0;
+        uint re_amount = record[timestamp][cardtype].balance;
+        record[timestamp][cardtype].balance = 0;
 
-        uint next_day = getNextday(); //next day
-        if (!record[next_day][cardId].created) {
-            userPledgeDaysMap[_msgSender()].push(day);
-            record[next_day][cardId].created = true;
+        uint nextday = getNextday(); //next day
+        if (!record[nextday][cardtype].created) {
+            userPledgeDaysMap[_msgSender()].push(nextday);
+            record[nextday][cardtype].created = true;
         }
         
-        record[next_day][cardId].amount = record[next_day][cardId].amount.add(re_amount);
+        record[nextday][cardtype].amount = record[nextday][cardtype].amount.add(re_amount);
         //update total pledge
-        totalPledge = totalPledge.add(record[next_day][cardId].re_amount.mul(rate).div(10000));
+        totalPledge = totalPledge.add(re_amount.mul(rate).div(10000));
         totalPledgeMap[nextday] = totalPledge;
     }
 

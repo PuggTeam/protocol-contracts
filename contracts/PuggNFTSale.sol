@@ -25,9 +25,6 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
     mapping(string => card) public      cards;      // cardtype => cardInfo
     mapping(string => uint) public      nodeBalanceMap;
     mapping(string => uint) public      nodePointsMap;
-    //mapping(string => NodeInfo)         nodeMap;
-    //string[] public                     nodeCodes;
-    //mapping(address => bool) private    defaultApprovals;
     uint public                         project_NFTBalance;
     uint public                         project_TokenBalance;
     uint public                         buyback_points;
@@ -39,16 +36,6 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
     uint8 public                        mode; //0 no list  1 list on dask
     uint256[50] private                 __gap;
 
-    // modifier onlyNode_owner(string memory code) {
-    //     require(nodeMap[code].account == _msgSender() || owner() == _msgSender(), "Ownable: caller is neither node nor owner");
-    //     _;
-    // }
-
-    // modifier onlyNode(string memory code) {
-    //     require(nodeMap[code].account == _msgSender(), "Ownable: caller is not node");
-    //     _;
-    // }
-
     modifier onlyExecutor() {
         require(_msgSender() == executor, "caller is not executor");
         _;
@@ -58,11 +45,6 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
         require(_msgSender() == project, "caller is not project");
         _;
     }
-
-    // modifier onlyApprovedForAll() {
-    //     require(isApprovedForAll(_msgSender()), "caller is not approved");
-    //     _;
-    // }
 
     function __initialize(address _nft, address _base_erc20, address _points_erc20, address _pugg_pool, address _project) external initializer {
         __Ownable_init();
@@ -114,11 +96,6 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
         percent_s = s;
         emit SetPercent_s(_msgSender(), s);
     }
-    
-    // function setDefaultApproval(address operator, bool hasApproval) public override onlyApprovedForAll {
-    //     defaultApprovals[operator] = hasApproval;
-    //     emit DefaultApproval(operator, hasApproval);
-    // }
 
     function setBase_token(address _token) public override onlyOwner {
         base_token = _token;
@@ -134,11 +111,11 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
         return cards[_type];
     }
 
-    function createCard(string memory _type, uint price, uint points, uint rate) public override onlyOwner {
-        require(!cards[_type].existed, "card type is already used");
-        require(rate >= 10000, "rate must >= 10000");
-        cards[_type] = card(price, points, rate, true, true);
-        emit CreateCard(id, price, points, rate);
+    function createCard(string memory cardtype, uint price, uint points, uint rate, uint stake_rate) public override onlyOwner {
+        require(!cards[cardtype].existed, "card type is already used");
+        require(stake_rate >= 10000, "stake_rate must >= 10000");
+        cards[cardtype] = card(price, points, rate, stake_rate, true, true);
+        emit CreateCard(cardtype, price, points, rate, stake_rate);
     }
 
     function delCard(string memory _type, bool active) public override onlyOwner {
@@ -148,19 +125,16 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
         emit DelCard(_type, active);
     }
 
-    function setCard(string memory _type, uint price, uint points, uint rate) public override onlyOwner {
+    function setCard(string memory _type, uint price, uint points, uint rate, uint stake_rate) public override onlyOwner {
         require(cards[_type].existed, "card id does not exist");
-        require(rate >= 10000, "rate must >= 10000");
+        require(stake_rate >= 10000, "stake_rate must >= 10000");
         card storage info = cards[_type];
         info.price = price;
         info.points = points;
         info.rate = rate;
-        emit SetCard(_type, price, points, rate);
+        info.stake_rate = stake_rate;
+        emit SetCard(_type, price, points, rate, stake_rate);
     }
-
-    // function isApprovedForAll(address operator) public view override returns (bool) {
-    //     return defaultApprovals[operator];
-    // }
 
     function pause() public override onlyOwner {
         _pause();
@@ -190,21 +164,22 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
     }
 
     function mintAndTransfer_721(string memory cardtype, string memory code, address to, string memory tokenURI) public override payable whenNotPaused {
-        require(cards[cardtype].existed && cards[cardtype].active, "card type does not exist or not actived");
-        uint card_bnb = cards[cardtype].price;
+        card memory cardinfo = cards[cardtype];
+        require(cardinfo.existed && cardinfo.active, "card type does not exist or not actived");
+        uint card_bnb = cardinfo.price;
         uint token_bnb = 0;
         if (mode == 0) { //no list use rate
-            token_bnb = cards[cardtype].points.div(rate);
+            token_bnb = cardinfo.points.div(cardinfo.rate);
         }
         else { //list on dask use router
-            token_bnb = IPancakeRouter02(router).getAmountsOut(cards[cardtype].points, getPathForCALtoETH())[1];
+            token_bnb = IPancakeRouter02(PANCAKE_ROUTER).getAmountsOut(cardinfo.points, getPathForCALtoETH())[1];
         }
         uint amount_bnb = card_bnb.add(token_bnb);
         require(msg.value >= amount_bnb, "send bnb is not enought");
 
         LibERC721LazyMint.Mint721Data memory data = _create_Mint721Data(cur_token_Id, tokenURI, address(this));
         PuggNFT(pugg_nft).mintAndTransfer(data, to);
-        PuggNFT(pugg_nft).set
+        PuggNFT(pugg_nft).setInfo(cur_token_Id, cardtype);
         cur_token_Id = cur_token_Id.add(1);
 
         //card sales s% gose to project, token sales n% gose to project
@@ -215,11 +190,11 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
         uint rank = IPuggPool(pugg_pool).getNodesRank(code);
         if (rank > 0 && rank < 11) { // 1 ~ 10
             nodeBalanceMap[code] = nodeBalanceMap[code].add(card_bnb.sub(project_commission));
-            nodePointsMap[code] = nodePointsMap[code].add(cards[cardId].points.mul(percent_y).div(10000));
+            nodePointsMap[code] = nodePointsMap[code].add(cardinfo.points.mul(percent_y).div(10000));
         }
         //todo transfer to pool
         //y% token commission gose to pool
-        IPuggPool(pugg_pool).recharge(cards[cardId].points.mul(percent_x).div(10000));
+        IPuggPool(pugg_pool).recharge(cardinfo.points.mul(percent_x).div(10000));
         //token sales m% gose to buy back token
         uint[] memory amounts_back = convertETHToCAL(token_bnb.mul(percent_m).div(10000));
         buyback_points = buyback_points.add(amounts_back[1]);
@@ -229,24 +204,8 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
             (bool success,) = msg.sender.call{ value: amount_bnb.sub(msg.value) }("");
             require(success, "refund failed");
         }
-        emit MintAndTransfer_721(cardId, code, data.tokenId, to, cards[cardId].price, card_bnb, token_bnb, amounts_back);
+        emit MintAndTransfer_721(cardtype, code, data.tokenId, to, cardinfo.price, card_bnb, token_bnb);
     }
-
-    // function withdraw_n(string memory code, uint8 _type) public override onlyNode(code) {
-    //     require(_type == 0 || _type == 1, "type is error");
-    //     uint amount = 0;
-    //     if (_type == 0) { //price
-    //         amount = nodeMap[code].balance;
-    //         nodeMap[code].balance = 0;
-    //         IERC20(base_token).transfer(_msgSender(), amount);
-    //     }
-    //     else {
-    //         amount = nodeMap[code].points;
-    //         nodeMap[code].points = 0;
-    //         IERC20(points_token).transfer(_msgSender(), amount);
-    //     }
-    //     emit Withdraw_n(_msgSender(), code, _type, amount);
-    // }
 
     function withdraw_p() public override onlyProject {
         uint amount = project_NFTBalance.add(project_TokenBalance);
