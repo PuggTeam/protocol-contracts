@@ -10,6 +10,16 @@ import "./interface/IPuggPool.sol";
 import "./interface/IPancakeRouter02.sol";
 import "./PuggNFT.sol";
 
+/**
+ * @title NFT Sale contract V2
+ * @dev This contract sells PUGG NFT cards with Calit. 
+ * There are only 2 levels in total, the owner could set total commision
+ * to L1, and give the authority to L1, which allows L1 to set its own L2. 
+ * L1 also has freedom to customize the commision split between L1 and its own L2.
+ * In addition, partner would take a certain percentage as transaction fees, while
+ * minting the NFT.
+ * @author PUGG
+ **/
 contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
     using SafeMath for uint256;
     address internal constant           CALIT_TOKEN = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
@@ -28,11 +38,11 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
     uint public                         project_NFTBalance;
     uint public                         project_TokenBalance;
     uint public                         buyback_points;
-    uint public                         percent_m; //m% stable coin commission gose to dex buy back
-    uint public                         percent_n; //n% stable coin commission gose to project
-    uint public                         percent_x; //x% stable coin commission gose to staking pool
-    uint public                         percent_y; //y% stable coin commission gose to nodes
-    uint public                         percent_s; //s% sales revenue gose to project and (100-s)% sales revenue gose to nodes
+    uint public                         pct_dex_calit; //m% stable coin commission gose to dex buy back
+    uint public                         pct_sales_calit; //n% stable coin commission gose to project
+    uint public                         pct_tokenCom_pool; //x% stable coin commission gose to staking pool
+    uint public                         pct_tokenCom_node; //y% stable coin commission gose to nodes
+    uint public                         pct_nftsales_pugg; //s% sales revenue gose to project and (100-s)% sales revenue gose to nodes
     uint8 public                        mode; //0 no list  1 list on dask
     uint256[50] private                 __gap;
 
@@ -67,34 +77,34 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
         emit SetMode(_msgSender(), _mode);
     }
 
-    function setPercent_m(uint m) public override onlyExecutor {
+    function setPct_dex_calit(uint m) public override onlyExecutor {
         require(m <= 10000, "percent must between 1 and 10000");
-        percent_m = m;
-        emit SetPercent_m(_msgSender(), m);
+        pct_dex_calit = m;
+        emit SetPct_dex_calit(_msgSender(), m);
     }
 
-    function setPercent_n(uint n) public override onlyExecutor {
+    function setPct_sales_calit(uint n) public override onlyExecutor {
         require(n <= 10000, "percent must between 1 and 10000");
-        percent_n = n;
-        emit SetPercent_n(_msgSender(), n);
+        pct_sales_calit = n;
+        emit SetPct_sales_calit(_msgSender(), n);
     }
 
-    function setPercent_x(uint x) public override onlyExecutor {
+    function setPct_tokenCom_pool(uint x) public override onlyExecutor {
         require(x <= 10000, "percent must between 1 and 10000");
-        percent_x = x;
-        emit SetPercent_x(_msgSender(), x);
+        pct_tokenCom_pool = x;
+        emit SetPct_tokenCom_pool(_msgSender(), x);
     }
     //todo  onlyExecutor => onlyGovernance
-    function setPercent_y(uint y) public override onlyExecutor {
+    function setPct_tokenCom_node(uint y) public override onlyExecutor {
         require(y <= 10000, "percent must between 1 and 10000");
-        percent_y = y;
-        emit SetPercent_y(_msgSender(), y);
+        pct_tokenCom_node = y;
+        emit SetPct_tokenCom_node(_msgSender(), y);
     }
 
-    function setPercent_s(uint s) public override onlyExecutor {
+    function setPct_nftsales_pugg(uint s) public override onlyExecutor {
         require(s <= 10000, "percent must between 1 and 10000");
-        percent_s = s;
-        emit SetPercent_s(_msgSender(), s);
+        pct_nftsales_pugg = s;
+        emit SetPct_nftsales_pugg(_msgSender(), s);
     }
 
     function setBase_token(address _token) public override onlyOwner {
@@ -183,20 +193,20 @@ contract PuggNFTSale is IPuggNFTSale, OwnableUpgradeable, PausableUpgradeable {
         cur_token_Id = cur_token_Id.add(1);
 
         //card sales s% gose to project, token sales n% gose to project
-        uint project_commission = card_bnb.mul(percent_s).div(10000);
+        uint project_commission = card_bnb.mul(pct_nftsales_pugg).div(10000);
         project_NFTBalance = project_NFTBalance.add(project_commission);
-        project_TokenBalance = project_TokenBalance.add(token_bnb.mul(percent_n).div(10000));
+        project_TokenBalance = project_TokenBalance.add(token_bnb.mul(pct_sales_calit).div(10000));
         //card sales (100-s)% gose to node, y% token commission gose to node
         uint rank = IPuggPool(pugg_pool).getNodesRank(code);
         if (rank > 0 && rank < 11) { // 1 ~ 10
             nodeBalanceMap[code] = nodeBalanceMap[code].add(card_bnb.sub(project_commission));
-            nodePointsMap[code] = nodePointsMap[code].add(cardinfo.points.mul(percent_y).div(10000));
+            nodePointsMap[code] = nodePointsMap[code].add(cardinfo.points.mul(pct_tokenCom_node).div(10000));
         }
         //todo transfer to pool
         //y% token commission gose to pool
-        IPuggPool(pugg_pool).recharge(cardinfo.points.mul(percent_x).div(10000));
+        IPuggPool(pugg_pool).recharge(cardinfo.points.mul(pct_tokenCom_pool).div(10000));
         //token sales m% gose to buy back token
-        uint[] memory amounts_back = convertETHToCAL(token_bnb.mul(percent_m).div(10000));
+        uint[] memory amounts_back = convertETHToCAL(token_bnb.mul(pct_dex_calit).div(10000));
         buyback_points = buyback_points.add(amounts_back[1]);
 
         // refund leftover ETH to user
